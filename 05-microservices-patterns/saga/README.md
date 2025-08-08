@@ -381,6 +381,203 @@ saga.compensation-timeout=10000
 - **Hybrid**: Комбинация обоих подходов
 - **Event-driven**: Асинхронная обработка через события
 
+### Choreography-based Saga (Сага на основе хореографии)
+
+В Choreography-based Saga каждый сервис знает только о своих собственных действиях и компенсирующих операциях. Сервисы обмениваются событиями через Message Broker, и каждый сервис решает, что делать дальше, основываясь на полученных событиях.
+
+#### Пример реализации Choreography-based Saga
+
+```java
+// Order Service - инициирует процесс
+@Service
+public class OrderService {
+    
+    @Autowired
+    private OrderRepository orderRepository;
+    
+    @Autowired
+    private EventPublisher eventPublisher;
+    
+    @Transactional
+    public Order createOrder(OrderRequest request) {
+        // 1. Создаем заказ
+        Order order = orderRepository.save(new Order(request));
+        
+        // 2. Публикуем событие - Order Service НЕ ЗНАЕТ что будет дальше!
+        eventPublisher.publish("order.created", new OrderCreatedEvent(
+            order.getId(),
+            order.getCustomerId(),
+            order.getItems(),
+            order.getTotal()
+        ));
+        
+        return order;
+    }
+    
+    // Обработчик события отката
+    @EventListener
+    public void handleOrderCancelled(OrderCancelledEvent event) {
+        // Компенсирующее действие - удаляем заказ
+        orderRepository.deleteById(event.getOrderId());
+    }
+}
+
+// Inventory Service - реагирует на события
+@Service
+public class InventoryService {
+    
+    @Autowired
+    private InventoryRepository inventoryRepository;
+    
+    @Autowired
+    private EventPublisher eventPublisher;
+    
+    // Обработчик события создания заказа
+    @EventListener
+    public void handleOrderCreated(OrderCreatedEvent event) {
+        try {
+            // Резервируем товары
+            List<String> reservedItems = inventoryRepository.reserveItems(event.getItems());
+            
+            // Публикуем событие успешного резервирования
+            eventPublisher.publish("inventory.reserved", new InventoryReservedEvent(
+                event.getOrderId(),
+                reservedItems
+            ));
+            
+        } catch (Exception e) {
+            // При ошибке публикуем событие отмены заказа
+            eventPublisher.publish("order.cancelled", new OrderCancelledEvent(
+                event.getOrderId(),
+                "Inventory reservation failed"
+            ));
+        }
+    }
+    
+    // Обработчик события отмены заказа
+    @EventListener
+    public void handleOrderCancelled(OrderCancelledEvent event) {
+        // Компенсирующее действие - освобождаем товары
+        inventoryRepository.releaseItems(event.getOrderId());
+    }
+}
+
+// Payment Service - реагирует на события
+@Service
+public class PaymentService {
+    
+    @Autowired
+    private PaymentRepository paymentRepository;
+    
+    @Autowired
+    private EventPublisher eventPublisher;
+    
+    // Обработчик события резервирования товаров
+    @EventListener
+    public void handleInventoryReserved(InventoryReservedEvent event) {
+        try {
+            // Списываем средства
+            Payment payment = paymentRepository.chargeCustomer(
+                event.getOrderId(),
+                event.getAmount()
+            );
+            
+            // Публикуем событие успешного списания
+            eventPublisher.publish("payment.completed", new PaymentCompletedEvent(
+                event.getOrderId(),
+                payment.getId()
+            ));
+            
+        } catch (Exception e) {
+            // При ошибке публикуем событие отмены заказа
+            eventPublisher.publish("order.cancelled", new OrderCancelledEvent(
+                event.getOrderId(),
+                "Payment failed"
+            ));
+        }
+    }
+    
+    // Обработчик события отмены заказа
+    @EventListener
+    public void handleOrderCancelled(OrderCancelledEvent event) {
+        // Компенсирующее действие - возвращаем средства
+        paymentRepository.refundCustomer(event.getOrderId());
+    }
+}
+
+// Notification Service - финальный шаг
+@Service
+public class NotificationService {
+    
+    @Autowired
+    private NotificationRepository notificationRepository;
+    
+    // Обработчик события завершения платежа
+    @EventListener
+    public void handlePaymentCompleted(PaymentCompletedEvent event) {
+        try {
+            // Отправляем уведомление
+            notificationRepository.sendOrderConfirmation(event.getOrderId());
+            
+            // Публикуем событие завершения процесса
+            eventPublisher.publish("order.confirmed", new OrderConfirmedEvent(
+                event.getOrderId()
+            ));
+            
+        } catch (Exception e) {
+            // При ошибке публикуем событие отмены заказа
+            eventPublisher.publish("order.cancelled", new OrderCancelledEvent(
+                event.getOrderId(),
+                "Notification failed"
+            ));
+        }
+    }
+}
+```
+
+#### Архитектурная схема Choreography-based Saga
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Order Service  │    │  Message Broker │    │ Inventory Service│
+│                 │    │                 │    │                 │
+│ 1. Create Order │───▶│ 2. order.created│───▶│ 3. Reserve Items│
+│                 │    │                 │    │                 │
+│ 8. Handle Cancel│◀───│ 7. order.cancelled│◀───│ 4. Publish Event│
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                │
+                                ▼
+                       ┌─────────────────┐    ┌─────────────────┐
+                       │ Payment Service │    │Notification Svc │
+                       │                 │    │                 │
+                       │ 5. Charge Money │    │ 6. Send Notif   │
+                       │                 │    │                 │
+                       │ 4. Publish Event│    │ 4. Publish Event│
+                       └─────────────────┘    └─────────────────┘
+```
+
+#### Ключевые особенности Choreography-based Saga:
+
+1. **Отсутствие центрального координатора** - каждый сервис сам решает, что делать
+2. **Слабая связанность** - сервисы не знают друг о друге напрямую
+3. **Событийная архитектура** - все взаимодействие через события
+4. **Автоматическая компенсация** - при ошибке каждый сервис выполняет свое компенсирующее действие
+5. **Масштабируемость** - легко добавлять новые сервисы без изменения существующих
+
+#### Преимущества Choreography-based Saga:
+
+- **Меньшая связанность** между сервисами
+- **Простота добавления** новых шагов
+- **Отсутствие единой точки отказа** (центрального координатора)
+- **Естественная асинхронность** через события
+
+#### Недостатки Choreography-based Saga:
+
+- **Сложность отладки** - трудно отследить весь flow
+- **Сложность тестирования** - нужно мокировать множество событий
+- **Потенциальные race conditions** - события могут приходить в неправильном порядке
+- **Сложность мониторинга** - нет центрального места для отслеживания состояния
+
 ### Ключевые принципы
 
 - **Локальные транзакции**: Каждый шаг выполняется в рамках локальной транзакции
@@ -471,6 +668,19 @@ Saga Pattern подходит для случаев, когда:
 | **Надежность** | Высокая | Высокая | Высокая |
 | **Масштабируемость** | Высокая | Низкая | Средняя |
 | **Простота отладки** | Средняя | Низкая | Низкая |
+
+### Сравнение Orchestration vs Choreography
+
+| Аспект | Orchestration-based Saga | Choreography-based Saga |
+|--------|-------------------------|-------------------------|
+| **Сложность реализации** | Средняя | Низкая |
+| **Централизация** | Высокая (есть координатор) | Низкая (нет координатора) |
+| **Видимость процесса** | Высокая (центральный мониторинг) | Низкая (распределенный мониторинг) |
+| **Отладка** | Простая (один координатор) | Сложная (множество сервисов) |
+| **Тестирование** | Простое (мокирование координатора) | Сложное (мокирование событий) |
+| **Масштабируемость** | Средняя (координатор может стать узким местом) | Высокая (нет единой точки отказа) |
+| **Добавление новых шагов** | Сложное (изменение координатора) | Простое (добавление обработчика событий) |
+| **Связанность сервисов** | Высокая (сервисы знают о координаторе) | Низкая (сервисы знают только о событиях) |
 
 ## Тестирование
 
@@ -638,6 +848,118 @@ public class TestPaymentService implements PaymentService {
     
     public void clear() {
         chargedAmount = BigDecimal.ZERO;
+    }
+}
+```
+
+#### Тест для Choreography-based Saga
+
+```java
+@SpringBootTest
+@Transactional
+class ChoreographySagaIntegrationTest {
+    
+    @Autowired
+    private OrderService orderService;
+    
+    @Autowired
+    private TestEventPublisher testEventPublisher;
+    
+    @Autowired
+    private TestInventoryService testInventoryService;
+    
+    @Autowired
+    private TestPaymentService testPaymentService;
+    
+    @Test
+    void shouldProcessCompleteChoreographyFlow() {
+        // Given
+        OrderRequest request = new OrderRequest("customer123", List.of("item1", "item2"));
+        
+        // When
+        Order order = orderService.createOrder(request);
+        
+        // Then - проверяем, что заказ создан
+        assertThat(order).isNotNull();
+        
+        // And - проверяем, что событие order.created опубликовано
+        assertThat(testEventPublisher.getPublishedEvents())
+            .anyMatch(event -> event.getType().equals("order.created"));
+        
+        // When - симулируем обработку событий
+        testEventPublisher.processEvents();
+        
+        // Then - проверяем, что товары зарезервированы
+        assertThat(testInventoryService.getReservedItems())
+            .containsAll(request.getItems());
+        
+        // And - проверяем, что платеж списан
+        assertThat(testPaymentService.getChargedAmount())
+            .isEqualTo(order.getTotal());
+        
+        // And - проверяем, что событие order.confirmed опубликовано
+        assertThat(testEventPublisher.getPublishedEvents())
+            .anyMatch(event -> event.getType().equals("order.confirmed"));
+    }
+    
+    @Test
+    void shouldCompensateOnInventoryFailure() {
+        // Given
+        OrderRequest request = new OrderRequest("customer123", List.of("item1"));
+        testInventoryService.setShouldFail(true);
+        
+        // When
+        Order order = orderService.createOrder(request);
+        testEventPublisher.processEvents();
+        
+        // Then - проверяем, что заказ удален (компенсация)
+        List<Order> orders = orderRepository.findAll();
+        assertThat(orders).isEmpty();
+        
+        // And - проверяем, что товары не зарезервированы
+        assertThat(testInventoryService.getReservedItems()).isEmpty();
+        
+        // And - проверяем, что платеж не списан
+        assertThat(testPaymentService.getChargedAmount()).isZero();
+        
+        // And - проверяем, что событие order.cancelled опубликовано
+        assertThat(testEventPublisher.getPublishedEvents())
+            .anyMatch(event -> event.getType().equals("order.cancelled"));
+    }
+}
+
+@Component
+@Primary
+public class TestEventPublisher implements EventPublisher {
+    
+    private final List<Event> publishedEvents = new ArrayList<>();
+    private final List<EventListener> eventListeners = new ArrayList<>();
+    
+    @Override
+    public void publish(String eventType, Object payload) {
+        Event event = new Event(eventType, payload);
+        publishedEvents.add(event);
+    }
+    
+    @Override
+    public void subscribe(EventListener listener) {
+        eventListeners.add(listener);
+    }
+    
+    public void processEvents() {
+        for (Event event : publishedEvents) {
+            for (EventListener listener : eventListeners) {
+                listener.onEvent(event);
+            }
+        }
+    }
+    
+    public List<Event> getPublishedEvents() {
+        return new ArrayList<>(publishedEvents);
+    }
+    
+    public void clear() {
+        publishedEvents.clear();
     }
 }
 ``` 
