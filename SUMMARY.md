@@ -59,9 +59,24 @@
 * [Shared Database](05-microservices-patterns/shared-database/README.md)
 * [Event-Driven Architecture](05-microservices-patterns/event-driven-architecture/README.md)
 
+## Паттерны высоконагруженных систем
+
+* [Horizontal Scaling](06-high-load-patterns/horizontal-scaling/README.md)
+* [Load Balancing](06-high-load-patterns/load-balancing/README.md)
+* [Caching Strategies](06-high-load-patterns/caching-strategies/README.md)
+* [Async Processing](06-high-load-patterns/async-processing/README.md)
+* [Rate Limiting](06-high-load-patterns/rate-limiting/README.md)
+* [Database Sharding](06-high-load-patterns/database-sharding/README.md)
+* [Read Replicas](06-high-load-patterns/read-replicas/README.md)
+* [Message Queuing](06-high-load-patterns/message-queuing/README.md)
+* [Retry Pattern](06-high-load-patterns/retry-pattern/README.md)
+* [Health Check](06-high-load-patterns/health-check/README.md)
+* [Distributed Tracing](06-high-load-patterns/distributed-tracing/README.md)
+* [Authentication Patterns](06-high-load-patterns/authentication-patterns/README.md)
+
 ## Дополнительные материалы
 
-* [Общие принципы](06-common/principles/README.md)
-* [UML диаграммы](06-common/uml/README.md)
-* [Лучшие практики](06-common/best-practices/README.md)
-* [Антипаттерны](06-common/anti-patterns/README.md) 
+* [Общие принципы](07-common/principles/README.md)
+* [UML диаграммы](07-common/uml/README.md)
+* [Лучшие практики](07-common/best-practices/README.md)
+* [Антипаттерны](07-common/anti-patterns/README.md) 
